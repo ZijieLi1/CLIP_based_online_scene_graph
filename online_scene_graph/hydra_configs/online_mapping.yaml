@@ -1,0 +1,61 @@
+defaults:
+  - base
+  - base_mapping
+  - classes
+  - detector
+  - logging_level
+  - _self_
+
+# Single input path: ROS topics. Phone, robot and dataset replays are publishers
+# under sources/ and publish these same four topics (see docs/ros-ingest.md).
+# HSR
+ros_rgb_topic: /head_rgbd_sensor/rgb/image_rect_color/compressed
+ros_depth_topic: /head_rgbd_sensor/depth_registered/image_rect_raw/compressedDepth
+ros_camera_info_topic: /head_rgbd_sensor/rgb/camera_info
+ros_pose_topic: /hsr/cam_pose
+ros_sync_slop: 0.1
+# The HSR publishes RELIABLE. A best-effort reader never requests retransmission and its depth
+# stream dies for good after Wi-Fi loss; a RELIABLE reader recovers. Applies to rgb/depth/camera_info; the pose
+# subscription is always best-effort. Use false for the phone/Replica publishers (they publish best-effort).
+ros_qos_reliable: !!bool True
+ros_qos_depth: 5
+# Default topics (replica_publisher.py / record3d_publisher.py):
+# ros_rgb_topic: /camera/color/image_raw
+# ros_depth_topic: /camera/depth/image_raw
+# ros_camera_info_topic: /camera/color/camera_info
+# ros_pose_topic: /camera/pose
+
+find_enabled: !!bool True
+find_service: /online_scene_graph/find
+find_k: 5
+find_min_sim: 0.25
+find_min_obs: 3
+
+force_detection: !!bool True
+save_detections: !!bool False
+detector: yolo26_seg
+
+make_edges: !!bool False
+exp_suffix: online
+detections_exp_suffix: online_dets
+
+save_video: !!bool False
+save_objects_all_frames: !!bool False
+vis_render: !!bool False
+debug_render: !!bool False
+
+use_rerun: !!bool False
+save_rerun: !!bool False
+# Viewer logging is synchronous in the mapping thread: throttle it (frames between logs).
+rerun_image_interval: 10
+rerun_objects_interval: 15
+rerun_log_depth: !!bool False
+
+denoise_interval: 10
+filter_interval: 10
+merge_interval: 5
+run_denoise_final_frame: !!bool True
+run_filter_final_frame: !!bool True
+run_merge_final_frame: !!bool True
+
+obj_min_detections: 1

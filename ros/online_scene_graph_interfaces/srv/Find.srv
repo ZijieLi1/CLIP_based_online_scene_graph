@@ -1,0 +1,9 @@
+string text
+int32 k
+float32 min_sim
+int32 min_obs
+---
+bool ok
+string message
+int64 generation
+string json

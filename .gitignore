@@ -1,0 +1,15 @@
+*.pt
+*.pth
+*.ts
+__pycache__/
+*.egg-info/
+outputs/
+Replica/
+Record3D/
+*.pkl.gz
+ros/install/
+ros/build/
+ros/log/
+*.log
+bags/
+latest_pcd_save

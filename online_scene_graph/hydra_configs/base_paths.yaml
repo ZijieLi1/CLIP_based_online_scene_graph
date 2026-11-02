@@ -1,0 +1,2 @@
+# Inside the container the repo is mounted at /ws.
+repo_root: /ws

@@ -1,0 +1,56 @@
+# Online scene graph in ROS 2 Humble (Python 3.10 + torch + rclpy in one process).
+#
+# Host: NVIDIA driver + nvidia-container-toolkit
+#   https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+#
+# Display (Rerun / Open3D / rqt): run `xhost +local:docker` on the host (Wayland+XWayland, no cookie sharing)
+#
+# Replica replay (no phone needed), two shells in the container:
+#   python3 online_scene_graph/sources/replica_publisher.py --scene-dir /data/Replica/office0
+#   python3 online_scene_graph/slam/online_mapping.py
+# Phone (Record3D USB, needs host usbmuxd): python3 online_scene_graph/sources/record3d_publisher.py
+
+services:
+  osg:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: online-scene-graph:humble
+    hostname: osg
+    working_dir: /ws
+    network_mode: host
+    ipc: host
+    privileged: true
+    stdin_open: true
+    tty: true
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,graphics,display
+      DISPLAY: ${DISPLAY}
+      QT_X11_NO_MITSHM: "1"
+      ROS_DOMAIN_ID: "96"
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      CYCLONEDDS_URI: file:///ws/docker/cyclonedds_profile.xml
+      BASH_ENV: /ws/docker/env.sh
+      # Path (not inode) so a restarted host usbmuxd is still visible.
+      USBMUXD_SOCKET_ADDRESS: UNIX:/host-run/usbmuxd
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+      - .:/ws
+      - ${REPLICA_DIR:-/home/zijie/ZJ-WS/concept-graphs/Replica}:/data/Replica:ro
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+      - /dev/bus/usb:/dev/bus/usb
+      - /run:/host-run:ro
+      - /var/lib/lockdown:/var/lib/lockdown:ro
+    entrypoint: ["/ws/docker/entrypoint.sh"]
+    command: ["sleep", "infinity"]
+    device_cgroup_rules:
+      - "c 189:* rmw"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

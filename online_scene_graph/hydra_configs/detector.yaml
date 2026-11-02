@@ -1,0 +1,13 @@
+# Detection backend: yolo11_sam | yolo26_seg | yoloe | yoloe_pf
+#   yolo11_sam : YOLO11 boxes + SAM masks (closed-vocab COCO)
+#   yolo26_seg : YOLO26 native instance seg (closed-vocab COCO; no SAM)
+#   yoloe      : YOLOE-seg with text prompts from classes_file (ScanNet200)
+#   yoloe_pf   : YOLOE prompt-free, built-in LVIS/Objects365 vocabulary
+detector: yolo26_seg
+
+yolo11_weights: yolo11l.pt
+sam_weights: mobile_sam.pt
+yolo26_seg_weights: ${repo_root}/online_scene_graph/yolo26s-seg.pt
+yoloe_weights: yoloe-11l-seg.pt
+yoloe_pf_weights: yoloe-11m-seg-pf.pt
+detection_conf: 0.78
