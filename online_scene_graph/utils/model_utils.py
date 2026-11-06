@@ -129,57 +129,62 @@ def compute_clip_features(image, detections, clip_model, clip_preprocess, clip_t
 
     return image_crops, image_feats, text_feats
 
+_CLIP_FILL = (122, 116, 104)  # CLIP's mean RGB: outside-the-mask pixels become "nothing" to the encoder
+
+
+def _masked_square_crop(image_pil, image_np, xyxy, mask, fill=_CLIP_FILL):
+    """Tight bbox crop with everything outside the instance mask set to `fill`, padded to a square.
+
+    Square padding matters: open_clip's preprocess resizes the short side then centre-crops, so a long
+    thin object would otherwise lose its ends.
+    """
+    h, w = image_np.shape[:2]
+    x0, y0 = max(int(np.floor(xyxy[0])), 0), max(int(np.floor(xyxy[1])), 0)
+    x1, y1 = min(int(np.ceil(xyxy[2])), w), min(int(np.ceil(xyxy[3])), h)
+    if x1 <= x0 or y1 <= y0:
+        return image_pil.crop((0, 0, 1, 1))
+    crop = image_np[y0:y1, x0:x1].copy()
+    crop[~mask[y0:y1, x0:x1].astype(bool)] = fill
+    side = max(crop.shape[:2])
+    canvas = np.empty((side, side, 3), dtype=np.uint8)
+    canvas[:] = fill
+    oy, ox = (side - crop.shape[0]) // 2, (side - crop.shape[1]) // 2
+    canvas[oy:oy + crop.shape[0], ox:ox + crop.shape[1]] = crop
+    return Image.fromarray(canvas)
+
+
 # @profile
-def compute_clip_features_batched(image, detections, clip_model, clip_preprocess, clip_tokenizer, classes, device):
-    
-    image = Image.fromarray(image)
-    padding = 20  # Adjust the padding amount as needed
-    
+def compute_clip_features_batched(image, detections, clip_model, clip_preprocess, clip_tokenizer, classes, device,
+                                  mask_crop=True, padding=20):
+    """mask_crop=True: encode the masked, square-padded crop (background greyed out).
+    mask_crop=False (or no masks): the old padded bbox crop."""
+    image_np = np.asarray(image)
+    image = Image.fromarray(image_np)
+    use_mask = bool(mask_crop) and getattr(detections, "mask", None) is not None
+
     image_crops = []
     preprocessed_images = []
-    text_tokens = []
-    
-    # Prepare data for batch processing
+
     for idx in range(len(detections.xyxy)):
         x_min, y_min, x_max, y_max = detections.xyxy[idx]
-        image_width, image_height = image.size
-        left_padding = min(padding, x_min)
-        top_padding = min(padding, y_min)
-        right_padding = min(padding, image_width - x_max)
-        bottom_padding = min(padding, image_height - y_max)
-
-        x_min -= left_padding
-        y_min -= top_padding
-        x_max += right_padding
-        y_max += bottom_padding
-
-        cropped_image = image.crop((x_min, y_min, x_max, y_max))
-        preprocessed_image = clip_preprocess(cropped_image).unsqueeze(0)
-        preprocessed_images.append(preprocessed_image)
-
-        class_id = detections.class_id[idx]
-        text_tokens.append(classes[class_id])
+        if use_mask:
+            cropped_image = _masked_square_crop(image, image_np, detections.xyxy[idx], detections.mask[idx])
+        else:
+            image_width, image_height = image.size
+            x_min -= min(padding, x_min)
+            y_min -= min(padding, y_min)
+            x_max += min(padding, image_width - x_max)
+            y_max += min(padding, image_height - y_max)
+            cropped_image = image.crop((x_min, y_min, x_max, y_max))
+        preprocessed_images.append(clip_preprocess(cropped_image).unsqueeze(0))
         image_crops.append(cropped_image)
-    
-    # Convert lists to batches
+
     preprocessed_images_batch = torch.cat(preprocessed_images, dim=0).to(device)
-    text_tokens_batch = clip_tokenizer(text_tokens).to(device)
-    
-    # Batch inference
     with torch.no_grad():
         image_features = clip_model.encode_image(preprocessed_images_batch)
         image_features /= image_features.norm(dim=-1, keepdim=True)
-        
-        # text_features = clip_model.encode_text(text_tokens_batch)
-        # text_features /= text_features.norm(dim=-1, keepdim=True)
-    
-    # Convert to numpy
-    image_feats = image_features.cpu().numpy()
-    # text_feats = text_features.cpu().numpy()
-    # image_feats = []
-    text_feats = []
-    
-    return image_crops, image_feats, text_feats
+
+    return image_crops, image_features.cpu().numpy(), []
 
 
 def compute_ft_vector_closeness_statistics(unbatched, batched):

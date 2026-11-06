@@ -3,11 +3,24 @@
 #   yolo26_seg : YOLO26 native instance seg (closed-vocab COCO; no SAM)
 #   yoloe      : YOLOE-seg with text prompts from classes_file (ScanNet200)
 #   yoloe_pf   : YOLOE prompt-free, built-in LVIS/Objects365 vocabulary
-detector: yolo26_seg
+detector: yoloe_pf
+
+# Optional masker: replaces the detector's own masks with box-prompted ones from a separate model.
+#   none       : use the detector's masks (yolo11_sam has none, so it falls back to mobile_sam)
+#   mobile_sam : MobileSAM, one box -> one mask (sharpest edge at the cost of slow)
+#   fastsam    : FastSAM, matches a mask to each box; a box it can't match keeps the
+#                detector's own mask (dropped for box-only detectors)
+masker: none
 
 yolo11_weights: yolo11l.pt
 sam_weights: mobile_sam.pt
+fastsam_weights: FastSAM-s.pt
 yolo26_seg_weights: ${repo_root}/online_scene_graph/yolo26s-seg.pt
 yoloe_weights: yoloe-11l-seg.pt
 yoloe_pf_weights: yoloe-11m-seg-pf.pt
 detection_conf: 0.78
+
+# CLIP crop (all backends): true = masked crop (outside the instance greyed, square-padded);
+# false = padded bbox crop with clip_crop_padding px of context.
+clip_mask_crop: true
+clip_crop_padding: 20

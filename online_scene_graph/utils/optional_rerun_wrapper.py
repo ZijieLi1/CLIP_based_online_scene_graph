@@ -120,6 +120,10 @@ def orr_log_depth_image(depth_tensor):
         orr.DepthImage(depth_in_meters , meter=0.9999999)
     )
 
+def orr_log_annotated_array(image_rgb):
+    """image_rgb: HxWx3 uint8 RGB with masks/labels already drawn (logged from memory, no file)."""
+    orr.log("world/camera/rgb_image_annotated", orr.Image(image_rgb))
+
 def orr_log_annotated_image(color_path, det_exp_vis_path):
     # Check if the visualizations exist and log them
     color_path = color_path

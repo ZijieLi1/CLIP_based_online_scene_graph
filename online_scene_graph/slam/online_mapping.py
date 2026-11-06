@@ -26,6 +26,7 @@ import supervision as sv
 
 from online_scene_graph.utils.optional_rerun_wrapper import (
     OptionalReRun,
+    orr_log_annotated_array,
     orr_log_annotated_image,
     orr_log_camera,
     orr_log_depth_image,
@@ -432,6 +433,8 @@ def main(cfg: DictConfig):
                             clip_tokenizer,
                             obj_classes.get_classes_arr(),
                             cfg.device,
+                            mask_crop=bool(cfg.clip_mask_crop),
+                            padding=int(cfg.clip_crop_padding),
                         )
 
                 tracker.increment_total_detections(len(curr_det.xyxy))
@@ -454,7 +457,7 @@ def main(cfg: DictConfig):
                 if cfg.save_detections:
                     vis_save_path = (det_exp_vis_path / color_path.name).with_suffix(".jpg")
                     annotated_image, labels = vis_result_fast(
-                        image, curr_det, obj_classes.get_classes_arr()
+                        s_rgb, curr_det, obj_classes.get_classes_arr()
                     )
                     cv2.imwrite(str(vis_save_path), annotated_image)
                     depth_image_rgb = cv2.normalize(depth_array, None, 0, 255, cv2.NORM_MINMAX)
@@ -489,7 +492,16 @@ def main(cfg: DictConfig):
             # Images are the heavy part of viewer logging; throttle them.
             if cfg.use_rerun and frame_idx % int(cfg.rerun_image_interval) == 0:
                 orr_log_rgb_image(image_rgb)
-                orr_log_annotated_image(color_path, det_exp_vis_path)
+                if run_detections and len(curr_det.xyxy) > 0:
+                    # Mask overlay straight from memory (only on logged frames); one colour per
+                    # instance, no boxes/labels.
+                    overlay_bgr, _ = vis_result_fast(
+                        s_rgb, curr_det, obj_classes.get_classes_arr(),
+                        instance_random_color=True, draw_bbox=False,
+                    )
+                    orr_log_annotated_array(cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2RGB))
+                else:
+                    orr_log_annotated_image(color_path, det_exp_vis_path)
                 if cfg.rerun_log_depth:
                     orr_log_depth_image(depth_tensor)
                 if os.path.exists(vis_save_path_for_vlm):
