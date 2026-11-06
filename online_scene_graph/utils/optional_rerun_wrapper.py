@@ -101,11 +101,9 @@ def orr_log_camera(intrinsics, adjusted_pose, prev_adjusted_pose, img_width, img
     prev_adjusted_pose = adjusted_pose.copy()
     return prev_adjusted_pose
         
-def orr_log_rgb_image(color_path):
-    orr.log(
-        "world/camera/rgb",
-        orr.EncodedImage(path=str(color_path))
-    )
+def orr_log_rgb_image(image_rgb):
+    """image_rgb: HxWx3 uint8 RGB array (logged straight from memory, no file)."""
+    orr.log("world/camera/rgb", orr.Image(image_rgb))
     
 def orr_log_depth_image(depth_tensor):
 

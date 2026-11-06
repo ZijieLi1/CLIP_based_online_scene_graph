@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import array
 import json
 
 from online_scene_graph.slam.grounding import GroundingService
@@ -14,7 +15,9 @@ class FindRosService:
         grounding: GroundingService,
         service_name: str = "/online_scene_graph/find",
         node_name: str = "osg_find",
+        snapshot_service_name: str = "/online_scene_graph/snapshot",
     ):
+        self.snapshot_service_name = snapshot_service_name
         self.grounding = grounding
         self.service_name = service_name
         self.node_name = node_name
@@ -54,6 +57,34 @@ class FindRosService:
             return response
 
         self._node.create_service(Find, self.service_name, on_find)
+
+        try:
+            from online_scene_graph_interfaces.srv import Snapshot
+        except ImportError:
+            print("Snapshot service skipped (rebuild online_scene_graph_interfaces); viz_query live mode unavailable.")
+        else:
+
+            def on_snapshot(request, response):
+                try:
+                    reply = self.grounding.snapshot(
+                        since_generation=int(request.since_generation),
+                        max_points=int(request.max_points_per_object),
+                    )
+                    response.ok = True
+                    response.message = ""
+                    response.generation = int(reply["generation"])
+                    response.unchanged = bool(reply["unchanged"])
+                    response.data = array.array("B", reply["data"])
+                except Exception as exc:
+                    response.ok = False
+                    response.message = str(exc)
+                    response.generation = 0
+                    response.unchanged = False
+                    response.data = array.array("B")
+                return response
+
+            self._node.create_service(Snapshot, self.snapshot_service_name, on_snapshot)
+            print(f"Snapshot ROS service {self.snapshot_service_name}")
         add_node(self._node)
         self._started = True
         print(f"Find ROS service {self.service_name} (in-process)")

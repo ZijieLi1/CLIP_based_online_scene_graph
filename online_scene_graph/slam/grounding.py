@@ -7,6 +7,7 @@ clip_lock so it does not overlap the mapper's image encode.
 
 from __future__ import annotations
 
+import io
 from dataclasses import asdict, dataclass
 from threading import Lock
 from typing import Any, Optional
@@ -195,6 +196,46 @@ class GroundingService:
                     generation=generation,
                 )
         return None
+
+    def snapshot(self, since_generation: int = -1, max_points: int = 2000) -> dict:
+        """Points/colors per object as npz bytes, for external viewers (viz_query.py)."""
+        max_points = max(int(max_points), 1) if max_points else 2000
+        rng = np.random.default_rng(0)
+        ids, classes, n_obs, counts, pts, cols = [], [], [], [], [], []
+        with self.map_lock:
+            generation = self.generation
+            if int(since_generation) == generation:
+                return {"ok": True, "generation": generation, "unchanged": True, "data": b""}
+            for obj in self.objects:
+                pcd = obj.get("pcd")
+                if pcd is None or len(pcd.points) == 0:
+                    continue
+                p = np.asarray(pcd.points, dtype=np.float32)
+                c = (
+                    np.asarray(pcd.colors, dtype=np.float32)
+                    if len(pcd.colors) == len(p)
+                    else np.full_like(p, 0.5)
+                )
+                if len(p) > max_points:
+                    sel = rng.choice(len(p), max_points, replace=False)
+                    p, c = p[sel], c[sel]
+                ids.append(_obj_id(obj))
+                classes.append(str(obj.get("class_name", "")))
+                n_obs.append(int(obj.get("num_detections", 0)))
+                counts.append(len(p))
+                pts.append(p)
+                cols.append((np.clip(c, 0, 1) * 255).astype(np.uint8))
+        buf = io.BytesIO()
+        np.savez(
+            buf,
+            ids=np.array(ids, dtype=str),
+            class_names=np.array(classes, dtype=str),
+            n_obs=np.array(n_obs, dtype=np.int32),
+            counts=np.array(counts, dtype=np.int64),
+            points=np.concatenate(pts) if pts else np.zeros((0, 3), np.float32),
+            colors=np.concatenate(cols) if cols else np.zeros((0, 3), np.uint8),
+        )
+        return {"ok": True, "generation": generation, "unchanged": False, "data": buf.getvalue()}
 
     def handle(self, request: dict) -> dict:
         cmd = str(request.get("cmd", "find"))

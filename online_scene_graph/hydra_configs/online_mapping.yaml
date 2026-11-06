@@ -33,6 +33,9 @@ find_min_obs: 3
 
 force_detection: !!bool True
 save_detections: !!bool False
+# Online run: nothing is written to disk (frames stay in memory). Turn on to dump the map at exit.
+save_pcd: !!bool True
+save_json: !!bool True
 detector: yolo26_seg
 
 make_edges: !!bool False
@@ -44,7 +47,7 @@ save_objects_all_frames: !!bool False
 vis_render: !!bool False
 debug_render: !!bool False
 
-use_rerun: !!bool False
+use_rerun: !!bool True
 save_rerun: !!bool False
 # Viewer logging is synchronous in the mapping thread: throttle it (frames between logs).
 rerun_image_interval: 10

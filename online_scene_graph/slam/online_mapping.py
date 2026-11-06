@@ -6,6 +6,7 @@ this process only subscribes. LatestFrameSlot drops stale frames.
 '''
 
 import os
+from pathlib import Path
 import signal
 import time
 import pickle
@@ -147,7 +148,7 @@ def main(cfg: DictConfig):
     det_exp_pkl_path = get_det_out_path(det_exp_path)
     det_exp_vis_path = get_vis_out_path(det_exp_path)
     stream_rgb_path, stream_depth_path, stream_poses_path = get_stream_data_out_path(
-        cfg.output_root, cfg.run_name
+        cfg.output_root, cfg.run_name, make_dir=bool(cfg.save_detections)
     )
 
     prev_adjusted_pose = None
@@ -373,23 +374,21 @@ def main(cfg: DictConfig):
             elif frame.dropped_before and frame_idx % 30 == 0:
                 print(f"Frame {frame_idx}: dropped {frame.dropped_before} stale frames so far")
 
-            curr_stream_rgb_path = stream_rgb_path / f"{frame_idx}.jpg"
-            cv2.imwrite(str(curr_stream_rgb_path), s_rgb)
-            color_path = curr_stream_rgb_path
-
+            # Frames stay in memory. color_path is only a per-frame *name* for helpers that
+            # derive output file names from it; nothing is written unless save_detections is on.
+            color_path = Path(f"{frame_idx}.jpg")
             if cfg.save_detections:
-                curr_stream_depth_path = stream_depth_path / f"{frame_idx}.png"
-                cv2.imwrite(str(curr_stream_depth_path), s_depth)
-                curr_stream_pose_path = stream_poses_path / f"{frame_idx}.npz"
-                np.savez(str(curr_stream_pose_path), s_camera_pose)
+                cv2.imwrite(str(stream_rgb_path / color_path.name), s_rgb)
+                cv2.imwrite(str(stream_depth_path / f"{frame_idx}.png"), s_depth)
+                np.savez(str(stream_poses_path / f"{frame_idx}.npz"), s_camera_pose)
 
-            image_original_pil = Image.open(color_path)
+            image_rgb = cv2.cvtColor(s_rgb, cv2.COLOR_BGR2RGB)
+            image_original_pil = Image.fromarray(image_rgb)
             color_tensor = torch.from_numpy(s_rgb.astype("float32"))
             depth_tensor = torch.from_numpy(s_depth.astype("float32"))
             intrinsics = s_intrinsic_mat
             depth_array = depth_tensor.cpu().numpy()
             color_np = color_tensor.cpu().numpy()
-            image_rgb = color_np.astype(np.uint8)
             assert image_rgb.max() > 1, "Image is not in range [0, 255]"
 
             vis_save_path_for_vlm = get_vlm_annotated_image_path(det_exp_vis_path, color_path)
@@ -398,13 +397,11 @@ def main(cfg: DictConfig):
             )
 
             if run_detections:
-                image = cv2.imread(str(color_path))
-                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                 xyxy_np, confidences, detection_class_ids, masks_np = run_detector(
                     detector_backend,
                     detection_model,
                     sam_predictor,
-                    color_path,
+                    s_rgb,
                     color_tensor.shape[:2],
                     cfg.detection_conf,
                 )
@@ -491,7 +488,7 @@ def main(cfg: DictConfig):
             )
             # Images are the heavy part of viewer logging; throttle them.
             if cfg.use_rerun and frame_idx % int(cfg.rerun_image_interval) == 0:
-                orr_log_rgb_image(color_path)
+                orr_log_rgb_image(image_rgb)
                 orr_log_annotated_image(color_path, det_exp_vis_path)
                 if cfg.rerun_log_depth:
                     orr_log_depth_image(depth_tensor)

@@ -71,8 +71,9 @@ def init_detector(cfg, prompt_class_names: list[str]):
     return backend, detection_model, sam_predictor, class_names
 
 
-def run_detector(backend, detection_model, sam_predictor, color_path: Path, image_hw, conf: float):
-    results = detection_model.predict(str(color_path), conf=conf, verbose=False)
+def run_detector(backend, detection_model, sam_predictor, image_bgr, image_hw, conf: float):
+    """image_bgr: HxWx3 uint8 BGR array (OpenCV order, as ultralytics expects for numpy input)."""
+    results = detection_model.predict(image_bgr, conf=conf, verbose=False)
     det_result = results[0]
     if det_result.boxes is None or det_result.boxes.xyxy.numel() == 0:
         return empty_detections(image_hw)
@@ -84,7 +85,7 @@ def run_detector(backend, detection_model, sam_predictor, color_path: Path, imag
 
     if backend == "yolo11_sam":
         torch.cuda.empty_cache()
-        sam_out = sam_predictor.predict(str(color_path), bboxes=xyxy_tensor, verbose=False)
+        sam_out = sam_predictor.predict(image_bgr, bboxes=xyxy_tensor, verbose=False)
         if sam_out[0].masks is None:
             return empty_detections(image_hw)
         masks_np = masks_to_bool_numpy(sam_out[0].masks.data, image_hw)
