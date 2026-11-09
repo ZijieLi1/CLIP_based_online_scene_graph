@@ -1,6 +1,8 @@
 defaults:
   - base_paths
 
-classes_file: ${repo_root}/online_scene_graph/scannet200_classes.txt
+# Text prompts for detector: yoloe (yoloe_pf and yolo26_seg use their own built-in names).
+# scannet200_classes.txt is the previous 200-class list.
+classes_file: ${repo_root}/online_scene_graph/yoloe_classes.txt
 bg_classes : ["wall", "floor", "ceiling"]
 skip_bg: !!bool False

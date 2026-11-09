@@ -145,6 +145,8 @@ def orr_log_vlm_image(vlm_image_path, label=""):
     else:
         logging.warning(f"VLM image not found at path: {vlm_image_path}")
         
+# The map is logged as static data: only the latest version of each entity stays in the viewer
+# (a per-frame timeline copy of every point cloud made the viewer fall behind over a long run).
 def orr_log_objs_pcd_and_bbox(objects, obj_classes):
     global prev_logged_entities
     global counter
@@ -188,7 +190,8 @@ def orr_log_objs_pcd_and_bbox(objects, obj_classes):
             ),
             orr.AnyValues(
                 uuid = str(obj['id']),
-            )
+            ),
+            static=True,
         )
         
         new_logged_entities.add(rgb_pcd_entity)
@@ -205,7 +208,8 @@ def orr_log_objs_pcd_and_bbox(objects, obj_classes):
             ),
             orr.AnyValues(
                 uuid = str(obj['id']),
-            )
+            ),
+            static=True,
         )
         
         new_logged_entities.add(seg_pcd_entity)
@@ -222,7 +226,8 @@ def orr_log_objs_pcd_and_bbox(objects, obj_classes):
             ),
             orr.AnyValues(
                 uuid = str(obj['id']),
-            )
+            ),
+            static=True,
         )
         
         new_logged_entities.add(inst_pcd_entity)
@@ -247,7 +252,8 @@ def orr_log_objs_pcd_and_bbox(objects, obj_classes):
             ),
             orr.AnyValues(
                 uuid = str(obj['id']),
-            )
+            ),
+            static=True,
         )
         
         new_logged_entities.add(bbox_entity)
@@ -265,7 +271,8 @@ def orr_log_objs_pcd_and_bbox(objects, obj_classes):
             ),
             orr.AnyValues(
                 uuid = str(obj['id']),
-            )
+            ),
+            static=True,
         )
         
         new_logged_entities.add(bbox_w_labels_entity)
@@ -285,7 +292,8 @@ def orr_log_objs_pcd_and_bbox(objects, obj_classes):
             ),
             orr.AnyValues(
                 uuid = str(obj['id']),
-            )
+            ),
+            static=True,
         )
         
         new_logged_entities.add(bbox_w_name_entity)
@@ -301,7 +309,8 @@ def orr_log_objs_pcd_and_bbox(objects, obj_classes):
                 # print(f"Clearing {entity_path}")
                 orr.log(
                     entity_path, 
-                    orr.Clear(recursive=True)
+                    orr.Clear(recursive=True),
+                    static=True,
                 )
         l=1
     

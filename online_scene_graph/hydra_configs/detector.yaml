@@ -1,9 +1,9 @@
 # Detection backend: yolo11_sam | yolo26_seg | yoloe | yoloe_pf
 #   yolo11_sam : YOLO11 boxes + SAM masks (closed-vocab COCO)
 #   yolo26_seg : YOLO26 native instance seg (closed-vocab COCO; no SAM)
-#   yoloe      : YOLOE-seg with text prompts from classes_file (ScanNet200)
-#   yoloe_pf   : YOLOE prompt-free, built-in LVIS/Objects365 vocabulary
-detector: yoloe_pf
+#   yoloe      : YOLOE-seg with text prompts from classes_file (yoloe_classes.txt)
+#   yoloe_pf   : YOLOE prompt-free, built-in 4,585-tag vocabulary
+detector: yoloe
 
 # Optional masker: replaces the detector's own masks with box-prompted ones from a separate model.
 #   none       : use the detector's masks (yolo11_sam has none, so it falls back to mobile_sam)
@@ -16,11 +16,19 @@ yolo11_weights: yolo11l.pt
 sam_weights: mobile_sam.pt
 fastsam_weights: FastSAM-s.pt
 yolo26_seg_weights: ${repo_root}/online_scene_graph/yolo26s-seg.pt
-yoloe_weights: yoloe-11l-seg.pt
-yoloe_pf_weights: yoloe-11m-seg-pf.pt
+yoloe_weights: yoloe-26l-seg.pt
+yoloe_pf_weights: yoloe-26m-seg-pf.pt
 detection_conf: 0.78
 
-# CLIP crop (all backends): true = masked crop (outside the instance greyed, square-padded);
-# false = padded bbox crop with clip_crop_padding px of context.
-clip_mask_crop: true
+# Crops fed to CLIP and DINOv2 (all backends): true = masked crop (outside the instance greyed,
+# square-padded); false = padded bbox crop with clip_crop_padding px of context. Both models share
+# the same crops, so this one switch masks (or not) both.
+clip_mask_crop: false
 clip_crop_padding: 20
+
+# DINOv2 instance feature (timm name, weights from the local HF cache). Used for association and
+# overlap-merge only; find() still uses CLIP text. visual_sim = (1 - dino_weight)*CLIP + dino_weight*DINO.
+use_dino: true
+dino_model: vit_base_patch14_dinov2.lvd142m
+dino_img_size: 224
+dino_weight: 0.5

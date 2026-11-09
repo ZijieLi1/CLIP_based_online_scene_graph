@@ -234,8 +234,34 @@ def init_pcd_denoise_dbscan(pcd: o3d.geometry.PointCloud, eps=0.02, min_points=1
         
     return pcd
 
-def init_process_pcd(pcd, downsample_voxel_size, dbscan_remove_noise, dbscan_eps, dbscan_min_points, run_dbscan=True):
+def erode_masks(masks: np.ndarray, px: int, min_keep_ratio: float = 0.3) -> np.ndarray:
+    """Shrink each (N,H,W) bool mask by `px` pixels (elliptical kernel) so mask-edge pixels, where
+    depth is least reliable, do not become 3D points. A mask that would lose more than
+    (1 - min_keep_ratio) of its area keeps its original shape (small objects stay)."""
+    if px <= 0 or len(masks) == 0:
+        return masks
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * px + 1, 2 * px + 1))
+    out = masks.copy()
+    for i in range(len(masks)):
+        eroded = cv2.erode(masks[i].astype(np.uint8), kernel) > 0
+        if eroded.sum() >= min_keep_ratio * masks[i].sum():
+            out[i] = eroded
+    return out
+
+
+def remove_pcd_outliers(pcd, nb_neighbors: int, std_ratio: float):
+    """Statistical outlier removal (Open3D). Disabled when nb_neighbors <= 0; a cloud that would be
+    reduced below 5 points, or is too small for the neighbourhood, is returned unchanged."""
+    if nb_neighbors <= 0 or len(pcd.points) <= nb_neighbors:
+        return pcd
+    cleaned, _ = pcd.remove_statistical_outlier(nb_neighbors=nb_neighbors, std_ratio=std_ratio)
+    return cleaned if len(cleaned.points) >= 5 else pcd
+
+
+def init_process_pcd(pcd, downsample_voxel_size, dbscan_remove_noise, dbscan_eps, dbscan_min_points, run_dbscan=True,
+                     outlier_nb_neighbors=0, outlier_std_ratio=2.0):
     pcd = pcd.voxel_down_sample(voxel_size=downsample_voxel_size)
+    pcd = remove_pcd_outliers(pcd, outlier_nb_neighbors, outlier_std_ratio)
     
     if dbscan_remove_noise and run_dbscan:
         pcd = init_pcd_denoise_dbscan(
@@ -293,8 +319,8 @@ def merge_obj2_into_obj1(obj1, obj2, downsample_voxel_size, dbscan_remove_noise,
     # Attributes to be explicitly handled
     extend_attributes = ['image_idx', 'mask_idx', 'color_path', 'class_id', 'mask', 'xyxy', 'conf', 'contain_number', 'captions']
     add_attributes = ['num_detections', 'num_obj_in_class']
-    skip_attributes = ['id', 'class_name', 'is_background', 'new_counter', 'curr_obj_num', 'inst_color']  # 'inst_color' just keeps obj1's
-    custom_handled = ['pcd', 'bbox', 'clip_ft', 'text_ft', 'n_points']
+    skip_attributes = ['id', 'class_name', 'is_background', 'new_counter', 'curr_obj_num', 'inst_color']  # kept from obj1; id, curr_obj_num, new_counter, inst_color switch to obj2's if obj2 is older (see below)
+    custom_handled = ['pcd', 'bbox', 'clip_ft', 'dino_ft', 'text_ft', 'n_points']
 
     # Check for unhandled keys and throw an error if there are
     all_handled_keys = set(extend_attributes + add_attributes + skip_attributes + custom_handled)
@@ -334,6 +360,18 @@ def merge_obj2_into_obj1(obj1, obj2, downsample_voxel_size, dbscan_remove_noise,
     # Merge and normalize 'clip_ft'
     obj1['clip_ft'] = (obj1['clip_ft'] * n_obj1_det + obj2['clip_ft'] * n_obj2_det) / (n_obj1_det + n_obj2_det)
     obj1['clip_ft'] = F.normalize(obj1['clip_ft'], dim=0)
+
+    # Same running mean for the optional DINOv2 feature.
+    if 'dino_ft' in obj1 and 'dino_ft' in obj2:
+        obj1['dino_ft'] = (obj1['dino_ft'] * n_obj1_det + obj2['dino_ft'] * n_obj2_det) / (n_obj1_det + n_obj2_det)
+        obj1['dino_ft'] = F.normalize(obj1['dino_ft'], dim=0)
+
+    # Identity: the merged object keeps the id of whichever side was created first (smaller
+    # curr_obj_num), whichever side is obj1, so an object keeps one id for the whole run.
+    if obj2.get('curr_obj_num', float('inf')) < obj1.get('curr_obj_num', float('inf')):
+        for key in ('id', 'curr_obj_num', 'new_counter', 'inst_color'):
+            if key in obj2:
+                obj1[key] = obj2[key]
 
     # merge text_ft
     # obj2['text_ft'] = to_tensor(obj2['text_ft'], device)
@@ -584,6 +622,7 @@ def merge_overlap_objects(
     spatial_sim_type: str,
     device: str,
     map_edges = None,
+    dino_weight: float = 0.0,
 ):
     x, y = overlap_matrix.nonzero()
     overlap_ratio = overlap_matrix[x, y]
@@ -608,6 +647,13 @@ def merge_overlap_objects(
                 to_tensor(objects[j]["clip_ft"]),
                 dim=0,
             )
+            if dino_weight > 0 and "dino_ft" in objects[i] and "dino_ft" in objects[j]:
+                dino_sim = F.cosine_similarity(
+                    to_tensor(objects[i]["dino_ft"]),
+                    to_tensor(objects[j]["dino_ft"]),
+                    dim=0,
+                )
+                visual_sim = (1 - dino_weight) * visual_sim + dino_weight * dino_sim
             # text_sim = F.cosine_similarity(
             #     to_tensor(objects[i]["text_ft"]),
             #     to_tensor(objects[j]["text_ft"]),
@@ -733,6 +779,7 @@ def merge_objects(
     device: str,
     do_edges: bool = False,
     map_edges = None,
+    dino_weight: float = 0.0,
 ):
     if len(objects) == 0 or merge_overlap_thresh <= 0:
         if do_edges:
@@ -761,6 +808,7 @@ def merge_objects(
         spatial_sim_type=spatial_sim_type,
         device=device,
         map_edges=map_edges,
+        dino_weight=dino_weight,
     )
     
     # print(f"MERGE OPERATIONS: \n{merge_operations}")
@@ -1110,6 +1158,7 @@ def make_detection_list_from_pcd_and_gobs(
             'pcd': obj_pcds_and_bboxes[mask_idx]['pcd'],
             'bbox': obj_pcds_and_bboxes[mask_idx]['bbox'],
             'clip_ft': to_tensor(gobs['image_feats'][mask_idx]),
+            **({'dino_ft': to_tensor(gobs['dino_feats'][mask_idx])} if gobs.get('dino_feats') is not None else {}),
             # 'text_ft': to_tensor(gobs['text_feats'][mask_idx]),
             'num_obj_in_class': num_obj_in_class,
             'curr_obj_num': tracker.total_object_count,
@@ -1325,7 +1374,7 @@ def prepare_objects_save_vis(objects: MapObjectList, downsample_size: float=0.02
     for i in range(len(objects_to_save)):
         for k in list(objects_to_save[i].keys()):
             if k not in [
-                'pcd', 'bbox', 'clip_ft', 'text_ft', 'class_id', 'num_detections', 'inst_color'
+                'pcd', 'bbox', 'clip_ft', 'dino_ft', 'text_ft', 'class_id', 'num_detections', 'inst_color'
             ]:
                 del objects_to_save[i][k]
                 
@@ -1348,7 +1397,7 @@ def prepare_objects_save_vis(objects: MapObjectList, downsample_size: float=0.02
     for i in range(len(objects_to_save)):
         for k in list(objects_to_save[i].keys()):
             if k not in [
-                'pcd', 'bbox', 'clip_ft', 'text_ft', 'class_id', 'num_detections', 'inst_color'
+                'pcd', 'bbox', 'clip_ft', 'dino_ft', 'text_ft', 'class_id', 'num_detections', 'inst_color'
             ]:
                 del objects_to_save[i][k]
                 

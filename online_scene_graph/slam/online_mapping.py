@@ -68,6 +68,7 @@ from online_scene_graph.slam.utils import (
     filter_objects,
     get_bounding_box,
     init_process_pcd,
+    erode_masks,
     make_detection_list_from_pcd_and_gobs,
     denoise_objects,
     merge_objects,
@@ -84,7 +85,7 @@ from online_scene_graph.slam.mapping import (
     match_detections_to_objects,
     merge_obj_matches,
 )
-from online_scene_graph.utils.model_utils import compute_clip_features_batched
+from online_scene_graph.utils.model_utils import compute_clip_features_batched, compute_dino_features, load_dino
 from online_scene_graph.utils.general_utils import get_vis_out_path, cfg_to_dict, check_run_detections
 from online_scene_graph.utils.detector_backends import init_detector, run_detector
 from online_scene_graph.slam.grounding import GroundingService
@@ -158,6 +159,8 @@ def main(cfg: DictConfig):
     clip_model = None
     clip_tokenizer = None
     clip_preprocess = None
+    dino_model = None
+    dino_weight = 0.0
     detector_backend = str(cfg.detector)
 
     if run_detections:
@@ -173,6 +176,10 @@ def main(cfg: DictConfig):
         )
         clip_model = clip_model.eval().to(cfg.device)
         clip_tokenizer = open_clip.get_tokenizer("ViT-H-14")
+        if bool(cfg.use_dino):
+            dino_model = load_dino(str(cfg.dino_model), cfg.device, int(cfg.dino_img_size))
+            dino_weight = float(cfg.dino_weight)
+            print(f"DINOv2 '{cfg.dino_model}' enabled; visual_sim = {1 - dino_weight:.2f}*CLIP + {dino_weight:.2f}*DINO.")
         torch.cuda.empty_cache()
     else:
         print("\n".join(["NOT Running detections..."] * 10))
@@ -259,6 +266,7 @@ def main(cfg: DictConfig):
                     device=cfg["device"],
                     do_edges=cfg["make_edges"],
                     map_edges=map_edges,
+                    dino_weight=dino_weight,
                 )
                 if cfg["make_edges"]:
                     objects, map_edges = merged
@@ -423,6 +431,7 @@ def main(cfg: DictConfig):
                 captions = []
                 if len(curr_det.xyxy) == 0:
                     image_crops, image_feats, text_feats = empty_clip_outputs()
+                    dino_feats = None
                 else:
                     with grounding.clip_lock:
                         image_crops, image_feats, text_feats = compute_clip_features_batched(
@@ -436,6 +445,11 @@ def main(cfg: DictConfig):
                             mask_crop=bool(cfg.clip_mask_crop),
                             padding=int(cfg.clip_crop_padding),
                         )
+                        dino_feats = None
+                        if dino_model is not None:
+                            dino_feats = compute_dino_features(
+                                image_crops, dino_model, cfg.device, int(cfg.dino_img_size)
+                            )
 
                 tracker.increment_total_detections(len(curr_det.xyxy))
                 results = {
@@ -446,6 +460,7 @@ def main(cfg: DictConfig):
                     "classes": obj_classes.get_classes_arr(),
                     "image_crops": image_crops,
                     "image_feats": image_feats,
+                    "dino_feats": dino_feats,
                     "text_feats": text_feats,
                     "detection_class_labels": detection_class_labels,
                     "labels": labels,
@@ -527,6 +542,7 @@ def main(cfg: DictConfig):
                 continue
 
             gobs["mask"] = mask_subtract_contained(gobs["xyxy"], gobs["mask"])
+            gobs["mask"] = erode_masks(gobs["mask"], int(cfg.mask_erode_px))
 
             obj_pcds_and_bboxes = measure_time(detections_to_obj_pcd_and_bbox)(
                 depth_array=depth_array,
@@ -548,6 +564,8 @@ def main(cfg: DictConfig):
                         dbscan_remove_noise=cfg["dbscan_remove_noise"],
                         dbscan_eps=cfg["dbscan_eps"],
                         dbscan_min_points=cfg["dbscan_min_points"],
+                        outlier_nb_neighbors=int(cfg.outlier_nb_neighbors),
+                        outlier_std_ratio=float(cfg.outlier_std_ratio),
                     )
                     obj["bbox"] = get_bounding_box(
                         spatial_sim_type=cfg["spatial_sim_type"],
@@ -580,7 +598,7 @@ def main(cfg: DictConfig):
                     objects=objects,
                     downsample_voxel_size=cfg["downsample_voxel_size"],
                 )
-                visual_sim = compute_visual_similarities(detection_list, objects)
+                visual_sim = compute_visual_similarities(detection_list, objects, dino_weight)
                 agg_sim = aggregate_similarities(
                     match_method=cfg["match_method"],
                     phys_bias=cfg["phys_bias"],
@@ -672,6 +690,7 @@ def main(cfg: DictConfig):
                         device=cfg["device"],
                         do_edges=cfg["make_edges"],
                         map_edges=map_edges,
+                        dino_weight=dino_weight,
                     )
                     if cfg["make_edges"]:
                         objects, map_edges = merged

@@ -1,0 +1,26 @@
+cleaning supplies
+snack
+food
+fruit
+tableware
+container
+drink
+cutlery
+table
+desk
+box
+monitor
+tv
+kettle
+chair
+stool
+bench
+couch
+sofa
+bed
+cabinet
+shelf
+fridge
+floor
+wall
+whiteboard

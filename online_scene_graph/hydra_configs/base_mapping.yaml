@@ -57,6 +57,9 @@ downsample_voxel_size: 0.025
 dbscan_remove_noise: !!bool True
 dbscan_eps: 0.1
 dbscan_min_points: 10
+mask_erode_px: 3            # shrink each mask by this many pixels before unprojecting to 3D (0 = off); a mask that would lose >70% of its area is left as is
+outlier_nb_neighbors: 20    # statistical outlier removal on each new object point cloud (0 = off)
+outlier_std_ratio: 2.5      # points farther than mean + ratio*std of the neighbour distance are dropped
 
 # Selection criteria of the fused object point cloud
 obj_min_points: 0

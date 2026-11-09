@@ -43,7 +43,7 @@ def compute_spatial_similarities(spatial_sim_type: str, detection_list: Detectio
     
     return spatial_sim
 
-def compute_visual_similarities(detection_list: DetectionList, objects: MapObjectList) -> torch.Tensor:
+def compute_visual_similarities(detection_list: DetectionList, objects: MapObjectList, dino_weight: float = 0.0) -> torch.Tensor:
     '''
     Compute the visual similarities between the detections and the objects
     
@@ -60,7 +60,14 @@ def compute_visual_similarities(detection_list: DetectionList, objects: MapObjec
     obj_fts = obj_fts.T.unsqueeze(0) # (1, D, N)
     
     visual_sim = F.cosine_similarity(det_fts, obj_fts, dim=1) # (M, N)
-    
+
+    # Optional DINOv2 term: visual = (1 - w) * clip_cos + w * dino_cos.
+    if dino_weight > 0 and all('dino_ft' in d for d in detection_list) and all('dino_ft' in o for o in objects):
+        det_d = detection_list.get_stacked_values_torch('dino_ft').unsqueeze(-1)
+        obj_d = objects.get_stacked_values_torch('dino_ft').T.unsqueeze(0)
+        dino_sim = F.cosine_similarity(det_d, obj_d, dim=1)
+        visual_sim = (1 - dino_weight) * visual_sim + dino_weight * dino_sim
+
     return visual_sim
 
 def aggregate_similarities(match_method: str, phys_bias: float, spatial_sim: torch.Tensor, visual_sim: torch.Tensor) -> torch.Tensor:

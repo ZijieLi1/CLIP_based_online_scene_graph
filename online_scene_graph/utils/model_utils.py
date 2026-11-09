@@ -187,6 +187,29 @@ def compute_clip_features_batched(image, detections, clip_model, clip_preprocess
     return image_crops, image_features.cpu().numpy(), []
 
 
+def load_dino(model_name: str, device, img_size: int = 224):
+    """DINOv2 via timm (CLS embedding, no head). Weights come from the local HF cache."""
+    import timm
+    model = timm.create_model(model_name, pretrained=True, num_classes=0, img_size=img_size)
+    return model.eval().to(device)
+
+
+def compute_dino_features(crops, dino_model, device, img_size: int = 224):
+    """L2-normalised DINOv2 CLS features for a list of PIL crops (squashed to img_size, no masking)."""
+    if len(crops) == 0:
+        return np.empty((0, 0), dtype=np.float32)
+    mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
+    batch = torch.stack([
+        torch.from_numpy(np.asarray(c.convert("RGB").resize((img_size, img_size), Image.BICUBIC))).permute(2, 0, 1)
+        for c in crops
+    ]).to(device).float().div(255.0)
+    with torch.no_grad():
+        feats = dino_model((batch - mean) / std)
+        feats = feats / feats.norm(dim=-1, keepdim=True)
+    return feats.cpu().numpy()
+
+
 def compute_ft_vector_closeness_statistics(unbatched, batched):
     # Initialize lists to store statistics
     mad = []  # Mean Absolute Difference
