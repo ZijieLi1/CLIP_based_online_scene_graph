@@ -2,7 +2,8 @@
 # torch, record3d, and YOLO share one process — no conda/unix-socket split.
 #
 # GPU: NVIDIA driver on the host + nvidia-container-toolkit. PyTorch wheels
-# ship the CUDA 11.8 runtime; this image does not install a full CUDA toolkit.
+# ship the CUDA 12.6 runtime (host driver must support it); this image does not install a full
+# CUDA toolkit.
 ARG BASE_IMAGE=osrf/ros:humble-desktop-full
 FROM ${BASE_IMAGE}
 
@@ -29,11 +30,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-humble-rmw-cyclonedds-cpp \
         && rm -rf /var/lib/apt/lists/*
 
-# Match the conda stack: torch 2.0.1 + CUDA 11.8. Host driver must be recent enough.
+# torch 2.9.1 + CUDA 12.6 wheels. numpy must stay 1.x for ROS 2 Humble (rclpy, cv_bridge); it is
+# pinned in requirements.txt and torch itself has no numpy dependency. torchvision is installed
+# --no-deps because it declares an unpinned `numpy` that would pull numpy 2. --ignore-installed:
+# Ubuntu's apt python3-sympy (distutils) cannot be uninstalled, which pip needs to upgrade it.
+# torchaudio is not used by this repo and is not installed.
 RUN python3 -m pip install --upgrade pip \
-    && python3 -m pip install --no-cache-dir \
-        torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 \
-        --index-url https://download.pytorch.org/whl/cu118
+    && python3 -m pip install --no-cache-dir --ignore-installed torch==2.9.1 \
+        --index-url https://download.pytorch.org/whl/cu126 \
+        --extra-index-url https://pypi.org/simple \
+    && python3 -m pip install --no-cache-dir --no-deps torchvision==0.24.1 \
+        --index-url https://download.pytorch.org/whl/cu126
 
 COPY docker/requirements.txt /tmp/requirements.txt
 RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
@@ -42,10 +49,9 @@ RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
 # opencv-python, ...) are not needed for inference and would fight the pins above.
 RUN python3 -m pip install --no-cache-dir --no-deps segment-anything-hq==0.3
 
-# Optional: 3D IoU helpers. Skip quietly if the wheel is gone.
-RUN python3 -m pip install --no-cache-dir --no-deps pytorch3d \
-        -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu118_pyt201/download.html \
-    || echo "WARN: pytorch3d wheel not installed; some IoU paths need it"
+# pytorch3d is NOT installed: its prebuilt wheel is tied to torch 2.0.1 + CUDA 11.8. Only the
+# oriented-box IoU helpers in utils/ious.py (iou_accurate / giou_accurate) import it; the default
+# overlap path uses compute_aabb_iou_batch and does not need it.
 
 WORKDIR /ws
 COPY setup.py /ws/setup.py
