@@ -234,10 +234,16 @@ def orr_log_objs_pcd_and_bbox(objects, obj_classes):
 
         # Assuming bbox is extracted as before
         bbox = obj['bbox']
-        centers = [bbox.center]
-        half_sizes = [bbox.extent /2 ]
+        # get_bounding_box returns an oriented box normally, but an axis-aligned one (no .center,
+        # .extent or .R) when the cloud has < 4 points or the oriented fit fails.
+        if hasattr(bbox, "R"):
+            bbox_center, bbox_extent, bbox_R = bbox.center, bbox.extent, bbox.R
+        else:
+            bbox_center, bbox_extent, bbox_R = bbox.get_center(), bbox.get_extent(), np.eye(3)
+        centers = [bbox_center]
+        half_sizes = [bbox_extent / 2]
         # Convert rotation matrix to quaternion
-        bbox_quaternion = [rotation_matrix_to_quaternion(bbox.R)]
+        bbox_quaternion = [rotation_matrix_to_quaternion(bbox_R)]
 
         bbox_entity = base_entity_path + "/bbox" + f"/{obj_label}"
         orr.log(

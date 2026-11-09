@@ -249,19 +249,27 @@ def erode_masks(masks: np.ndarray, px: int, min_keep_ratio: float = 0.3) -> np.n
     return out
 
 
-def remove_pcd_outliers(pcd, nb_neighbors: int, std_ratio: float):
-    """Statistical outlier removal (Open3D). Disabled when nb_neighbors <= 0; a cloud that would be
-    reduced below 5 points, or is too small for the neighbourhood, is returned unchanged."""
-    if nb_neighbors <= 0 or len(pcd.points) <= nb_neighbors:
-        return pcd
-    cleaned, _ = pcd.remove_statistical_outlier(nb_neighbors=nb_neighbors, std_ratio=std_ratio)
-    return cleaned if len(cleaned.points) >= 5 else pcd
+# A 2D mask blob counts as a separate piece only if it has at least max(BLOB_MIN_PX, BLOB_MIN_FRAC of
+# the mask's pixels); the same thresholds are used for the detector's blob handling.
+BLOB_MIN_PX = 100
+BLOB_MIN_FRAC = 0.05
 
 
-def init_process_pcd(pcd, downsample_voxel_size, dbscan_remove_noise, dbscan_eps, dbscan_min_points, run_dbscan=True,
-                     outlier_nb_neighbors=0, outlier_std_ratio=2.0):
+def init_process_pcd_blobs(blobs, downsample_voxel_size, dbscan_remove_noise, dbscan_eps, dbscan_min_points):
+    """Voxel-downsample + DBSCAN (largest cluster) on each blob's cloud separately, then join them,
+    so every blob of a split object keeps its own main cluster."""
+    cleaned = [
+        init_process_pcd(b, downsample_voxel_size, dbscan_remove_noise, dbscan_eps, dbscan_min_points)
+        for b in blobs
+    ]
+    pcd = cleaned[0]
+    for extra in cleaned[1:]:
+        pcd += extra
+    return pcd
+
+
+def init_process_pcd(pcd, downsample_voxel_size, dbscan_remove_noise, dbscan_eps, dbscan_min_points, run_dbscan=True):
     pcd = pcd.voxel_down_sample(voxel_size=downsample_voxel_size)
-    pcd = remove_pcd_outliers(pcd, outlier_nb_neighbors, outlier_std_ratio)
     
     if dbscan_remove_noise and run_dbscan:
         pcd = init_pcd_denoise_dbscan(
@@ -288,14 +296,13 @@ def process_pcd(pcd, downsample_voxel_size, dbscan_remove_noise, dbscan_eps, dbs
 
 # @profile
 def get_bounding_box(spatial_sim_type, pcd):
-    if ("accurate" in spatial_sim_type or "overlap" in spatial_sim_type) and len(pcd.points) >= 4:
-        try:
-            return pcd.get_oriented_bounding_box(robust=True)
-        except RuntimeError as e:
-            print(f"Met {e}, use axis aligned bounding box instead")
-            return pcd.get_axis_aligned_bounding_box()
-    else:
-        return pcd.get_axis_aligned_bounding_box()
+    """Always an axis-aligned box (aligned with the world axes, so with world z).
+
+    The oriented box (PCA of the convex hull) was unstable on partial, noisy views, needed a
+    fallback for clouds with < 4 points, and raised "Plane vertices are not coplanar" in the 3D IoU
+    gate. `spatial_sim_type` is kept in the signature for the callers; it no longer changes the box.
+    """
+    return pcd.get_axis_aligned_bounding_box()
 
 # @profile
 def merge_obj2_into_obj1(obj1, obj2, downsample_voxel_size, dbscan_remove_noise, dbscan_eps, dbscan_min_points, spatial_sim_type, device, run_dbscan=True):
@@ -1285,7 +1292,8 @@ def detections_to_obj_pcd_and_bbox(
     dbscan_eps = None,
     dbscan_min_points = None,
     run_dbscan = None,
-    device='cuda'
+    device='cuda',
+    per_blob = False,
 ):
     """
     This function processes a batch of objects to create colored point clouds, apply transformations, and compute bounding boxes.
@@ -1331,23 +1339,50 @@ def detections_to_obj_pcd_and_bbox(
         valid_points = mask_points[valid_points_mask]
         valid_colors = mask_colors[valid_points_mask] if mask_colors is not None else None
 
-        downsampled_points, downsampled_colors = dynamic_downsample(valid_points, colors=valid_colors, target=obj_pcd_max_points)
+        def _make_pcd(points, colors, target):
+            points, colors = dynamic_downsample(points, colors=colors, target=target)
+            pcd_ = o3d.geometry.PointCloud()
+            pcd_.points = o3d.utility.Vector3dVector(points.cpu().numpy())
+            if colors is not None:
+                pcd_.colors = o3d.utility.Vector3dVector(colors.cpu().numpy())
+            if trans_pose is not None:
+                pcd_.transform(trans_pose)  # Apply transformation directly to the point cloud
+            return pcd_
 
-        # Create point cloud
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(downsampled_points.cpu().numpy())
-        if downsampled_colors is not None:
-            pcd.colors = o3d.utility.Vector3dVector(downsampled_colors.cpu().numpy())
-
-        if trans_pose is not None:
-            pcd.transform(trans_pose)  # Apply transformation directly to the point cloud
-            pass
+        # A mask in several 2D blobs (an occluder cuts the object) gets one cloud per blob, so the
+        # later DBSCAN keeps the largest cluster of each blob instead of one for the whole object.
+        blob_pcds = []
+        if per_blob:
+            n_lab, lab, stats, _ = cv2.connectedComponentsWithStats(masks[i].astype(np.uint8), connectivity=8)
+            areas = {k: int(stats[k, cv2.CC_STAT_AREA]) for k in range(1, n_lab)}
+            total_area = sum(areas.values())
+            keep = [k for k, a in areas.items() if a >= max(BLOB_MIN_PX, BLOB_MIN_FRAC * total_area)]
+            if len(keep) > 1:
+                lab_valid = torch.from_numpy(lab).to(valid_points.device)[valid_points_mask]
+                for k in keep:
+                    sel = lab_valid == k
+                    if int(sel.sum()) < min_points_threshold:
+                        continue
+                    share = float(sel.sum()) / float(valid_points.shape[0])
+                    target = -1 if obj_pcd_max_points == -1 else max(int(obj_pcd_max_points * share), 100)
+                    blob_pcds.append(_make_pcd(
+                        valid_points[sel], valid_colors[sel] if valid_colors is not None else None, target
+                    ))
+        if len(blob_pcds) > 1:
+            pcd = blob_pcds[0] + blob_pcds[1]
+            for extra in blob_pcds[2:]:
+                pcd += extra
+        else:
+            blob_pcds = []
+            pcd = _make_pcd(valid_points, valid_colors, obj_pcd_max_points)
 
         bbox = get_bounding_box(spatial_sim_type, pcd)
         if bbox.volume() < 1e-6:
             continue
 
         processed_objects[i] = {'pcd': pcd, 'bbox': bbox}
+        if blob_pcds:
+            processed_objects[i]['blobs'] = blob_pcds
 
     return processed_objects
 

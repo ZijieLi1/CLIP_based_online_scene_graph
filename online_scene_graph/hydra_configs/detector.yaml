@@ -1,8 +1,9 @@
-# Detection backend: yolo11_sam | yolo26_seg | yoloe | yoloe_pf
+# Detection backend: yolo11_sam | yolo26_seg | yoloe | yoloe_pf | sam3
 #   yolo11_sam : YOLO11 boxes + SAM masks (closed-vocab COCO)
 #   yolo26_seg : YOLO26 native instance seg (closed-vocab COCO; no SAM)
 #   yoloe      : YOLOE-seg with text prompts from classes_file (yoloe_classes.txt)
 #   yoloe_pf   : YOLOE prompt-free, built-in 4,585-tag vocabulary
+#   sam3       : SAM 3 text-prompted (classes_file as prompts; masks included; slow)
 detector: yoloe
 
 # Optional masker: replaces the detector's own masks with box-prompted ones from a separate model.
@@ -10,7 +11,14 @@ detector: yoloe
 #   mobile_sam : MobileSAM, one box -> one mask (sharpest edge at the cost of slow)
 #   fastsam    : FastSAM, matches a mask to each box; a box it can't match keeps the
 #                detector's own mask (dropped for box-only detectors)
-masker: none
+#   sam_hq     : SAM-HQ (segment-anything-hq), one box -> one mask, finer on thin structure
+masker: sam_hq
+# How a detection whose own mask is in several pieces (an occluder cuts it, so its box also covers
+# the occluder) is handed to the masker (needs a masker and a detector with its own masks):
+#   none        : prompt with the detector's box
+#   split_merge : one prompt per blob (tiny specks ignored), union of the resulting masks
+#   largest     : prompt only with the biggest blob; the detection's box shrinks to it
+masker_blobs: split_merge
 
 yolo11_weights: yolo11l.pt
 sam_weights: mobile_sam.pt
@@ -18,12 +26,15 @@ fastsam_weights: FastSAM-s.pt
 yolo26_seg_weights: ${repo_root}/online_scene_graph/yolo26s-seg.pt
 yoloe_weights: yoloe-26l-seg.pt
 yoloe_pf_weights: yoloe-26m-seg-pf.pt
+sam_hq_model: vit_b          # vit_b | vit_l | vit_h | vit_tiny (weights auto-download from HF lkeab/hq-sam)
+sam_hq_weights: null         # or a local sam_hq_*.pth path
+sam3_weights: ${repo_root}/sam3.pt        # gated (Hugging Face facebook/sam3); download it and point this at the file
 detection_conf: 0.78
 
 # Crops fed to CLIP and DINOv2 (all backends): true = masked crop (outside the instance greyed,
 # square-padded); false = padded bbox crop with clip_crop_padding px of context. Both models share
 # the same crops, so this one switch masks (or not) both.
-clip_mask_crop: false
+clip_mask_crop: false # NOTE: I don't think this will work well and also the instance itself can be dark.
 clip_crop_padding: 20
 
 # DINOv2 instance feature (timm name, weights from the local HF cache). Used for association and

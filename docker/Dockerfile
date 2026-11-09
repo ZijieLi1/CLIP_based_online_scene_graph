@@ -38,6 +38,10 @@ RUN python3 -m pip install --upgrade pip \
 COPY docker/requirements.txt /tmp/requirements.txt
 RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
 
+# SAM-HQ masker (masker: sam_hq). --no-deps: its declared deps (onnx, pycocotools, a non-headless
+# opencv-python, ...) are not needed for inference and would fight the pins above.
+RUN python3 -m pip install --no-cache-dir --no-deps segment-anything-hq==0.3
+
 # Optional: 3D IoU helpers. Skip quietly if the wheel is gone.
 RUN python3 -m pip install --no-cache-dir --no-deps pytorch3d \
         -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu118_pyt201/download.html \

@@ -68,6 +68,7 @@ from online_scene_graph.slam.utils import (
     filter_objects,
     get_bounding_box,
     init_process_pcd,
+    init_process_pcd_blobs,
     erode_masks,
     make_detection_list_from_pcd_and_gobs,
     denoise_objects,
@@ -169,7 +170,7 @@ def main(cfg: DictConfig):
         detector_backend, detection_model, sam_predictor, detector_class_names = init_detector(
             cfg, obj_classes.get_classes_arr()
         )
-        if detector_backend != "yoloe":
+        if detector_backend not in ("yoloe", "sam3"):
             obj_classes.set_class_list(detector_class_names)
         clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
             "ViT-H-14", "laion2b_s32b_b79k"
@@ -413,6 +414,7 @@ def main(cfg: DictConfig):
                     s_rgb,
                     color_tensor.shape[:2],
                     cfg.detection_conf,
+                    blob_mode=str(cfg.get("masker_blobs", "none")),
                 )
                 detection_class_labels = [
                     f"{obj_classes.get_classes_arr()[class_id]} {class_idx}"
@@ -554,18 +556,29 @@ def main(cfg: DictConfig):
                 spatial_sim_type=cfg.spatial_sim_type,
                 obj_pcd_max_points=cfg.obj_pcd_max_points,
                 device=cfg.device,
+                per_blob=bool(cfg.dbscan_per_blob),
             )
 
             for obj in obj_pcds_and_bboxes:
-                if obj:
+                if obj and obj.get("blobs"):
+                    obj["pcd"] = init_process_pcd_blobs(
+                        obj["blobs"],
+                        downsample_voxel_size=cfg["downsample_voxel_size"],
+                        dbscan_remove_noise=cfg["dbscan_remove_noise"],
+                        dbscan_eps=cfg["dbscan_eps"],
+                        dbscan_min_points=cfg["dbscan_min_points"],
+                    )
+                    obj["bbox"] = get_bounding_box(
+                        spatial_sim_type=cfg["spatial_sim_type"],
+                        pcd=obj["pcd"],
+                    )
+                elif obj:
                     obj["pcd"] = init_process_pcd(
                         pcd=obj["pcd"],
                         downsample_voxel_size=cfg["downsample_voxel_size"],
                         dbscan_remove_noise=cfg["dbscan_remove_noise"],
                         dbscan_eps=cfg["dbscan_eps"],
                         dbscan_min_points=cfg["dbscan_min_points"],
-                        outlier_nb_neighbors=int(cfg.outlier_nb_neighbors),
-                        outlier_std_ratio=float(cfg.outlier_std_ratio),
                     )
                     obj["bbox"] = get_bounding_box(
                         spatial_sim_type=cfg["spatial_sim_type"],

@@ -55,11 +55,10 @@ min_points_threshold: 16 # projected and sampled pcd with less points will be sk
 obj_pcd_max_points: 5000 # Determines the maximum point count for object point clouds; exceeding this triggers downsampling to approx max points. Set to -1 to disable.
 downsample_voxel_size: 0.025
 dbscan_remove_noise: !!bool True
+dbscan_per_blob: !!bool True   # a mask in several 2D blobs: run the voxel+DBSCAN cleanup on each blob's cloud separately and join, so each blob keeps its own main cluster
 dbscan_eps: 0.1
 dbscan_min_points: 10
-mask_erode_px: 3            # shrink each mask by this many pixels before unprojecting to 3D (0 = off); a mask that would lose >70% of its area is left as is
-outlier_nb_neighbors: 20    # statistical outlier removal on each new object point cloud (0 = off)
-outlier_std_ratio: 2.5      # points farther than mean + ratio*std of the neighbour distance are dropped
+mask_erode_px: 5            # shrink each mask by this many pixels before unprojecting to 3D (0 = off); a mask that would lose >70% of its area is left as is
 
 # Selection criteria of the fused object point cloud
 obj_min_points: 0
@@ -73,7 +72,7 @@ merge_text_sim_thresh: 0.7     # Merge only if the text cosine sim is larger
 # Periodically perform post-process operations every k frame
 # -1 means not perform them during the run. They are performed at the end anyway. 
 
-denoise_interval: 20           # Run DBSCAN every k frame. This operation is heavy
+denoise_interval: 15           # Run DBSCAN every k frame. This operation is heavy
 filter_interval: -1            # Filter objects that have too few associations or are too small
 merge_interval: -1             # Merge objects based on geometric and semantic similarity
 run_denoise_final_frame: !!bool True

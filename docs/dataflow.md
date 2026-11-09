@@ -2,7 +2,7 @@
 
 End-to-end view of the online mapper (`online_scene_graph/slam/online_mapping.py`). Three neural models run on the hot path: one instance segmenter (`detector:`, default `yoloe_pf`, optionally re-masked by `masker:`), OpenCLIP ViT-H-14 and, when `use_dino: true`, a DINOv2 ViT-B/14. Everything after that is geometry (depth back-projection, DBSCAN, voxel downsample, IoU/overlap).
 
-> Note: **SAM 3 is not used in this repo.** The default segmenter is YOLOE prompt-free (`yoloe_pf`), whose own instance masks are used directly. MobileSAM (`mobile_sam.pt`) is used only in the two-stage `yolo11_sam` backend or when `masker: mobile_sam` is set; `masker: fastsam` uses FastSAM instead. On 8 Replica frames YOLOE-pf boxes + MobileSAM masks looked cleaner at edges than YOLOE's own masks but cost ~45 ms more per frame and did not score better on a depth-leak proxy, so SAM is not on the default path.
+> Note: **SAM 3 is an optional backend (`detector: sam3`), not the default.** The default segmenter is YOLOE prompt-free (`yoloe_pf`), whose own instance masks are used directly. MobileSAM (`mobile_sam.pt`) is used only in the two-stage `yolo11_sam` backend or when `masker: mobile_sam` is set; `masker: fastsam` uses FastSAM instead. On 8 Replica frames YOLOE-pf boxes + MobileSAM masks looked cleaner at edges than YOLOE's own masks but cost ~45 ms more per frame and did not score better on a depth-leak proxy, so SAM is not on the default path.
 
 ## 1. System dataflow
 
@@ -25,16 +25,15 @@ flowchart TD
     SLOT -->|"Frame: rgb, depth, K, pose"| DET
 
     subgraph PERFRAME["Per-frame loop (mapping thread) — online_mapping.py"]
-        DET["<b>2D detection + instance masks</b><br/>utils/detector_backends.py<br/>MODEL: YOLOE-PF (default) | YOLOE | YOLO26-seg | YOLO11 + MobileSAM<br/>optional masker: MobileSAM | FastSAM replaces the detector's masks"]
+        DET["<b>2D detection + instance masks</b><br/>utils/detector_backends.py<br/>MODEL: YOLOE-PF (default) | YOLOE | YOLO26-seg | YOLO11 + MobileSAM | SAM 3 (text prompts)<br/>optional masker: MobileSAM | FastSAM | SAM-HQ replaces the detector's masks"]
         CLIPIMG["<b>Per-detection embeddings</b><br/>utils/model_utils.py<br/>CLIP: OpenCLIP ViT-H-14 (laion2b) image tower -> clip_ft<br/>DINO: DINOv2 ViT-B/14 CLS (use_dino) -> dino_ft<br/>same crop for both (padded bbox, or masked if clip_mask_crop)"]
         FILT["Filter detections<br/>(mask area, conf, bbox ratio, bg classes)<br/>mask_subtract_contained"]
         subgraph BP["Back-project masked depth to 3D — slam/utils.py"]
             direction LR
-            ERODE["Erode mask<br/>mask_erode_px"] --> UNPROJ["Unproject masked depth<br/>(K + pose) -> per-object pcd"]
+            ERODE["Erode mask<br/>mask_erode_px"] --> UNPROJ["Unproject masked depth<br/>(K + pose) -> one pcd per mask blob"]
             UNPROJ --> VOX["Voxel downsample 2.5 cm"]
-            VOX --> SOR["Statistical outlier removal<br/>outlier_nb_neighbors, outlier_std_ratio"]
-            SOR --> DBS["DBSCAN: keep largest cluster"]
-            DBS --> BBOX["Bounding box"]
+            VOX --> DBS["DBSCAN: keep largest cluster<br/>per 2D mask blob (dbscan_per_blob)"]
+            DBS --> BBOX["Axis-aligned bounding box<br/>(world axes; get_bounding_box)"]
         end
         DL["DetectionList<br/>(pcd, bbox, clip_ft, dino_ft, class, conf)"]
         MATCH["Data association — slam/mapping.py<br/>spatial sim (overlap/IoU) + visual sim<br/>(1-w)*cos(clip_ft) + w*cos(dino_ft) -> sim_sum > 1.2"]
@@ -76,9 +75,10 @@ flowchart TD
 | --- | --- | --- | --- | --- |
 | Instance masks (default) | **YOLOE-26m-seg-pf**, prompt-free, built-in vocabulary of 4,585 tags (checked on `yoloe-26m-seg-pf.pt`; includes non-object tags such as "action film"); native masks. The bg-class label filter rarely matches these names | `detector_backends.py` | BGR frame -> boxes, conf, class ids, masks | `detector: yoloe_pf`, `yoloe_pf_weights`, `detection_conf` |
 | Instance masks (alt) | **YOLOE-26l-seg**, open vocab, text prompts from `yoloe_classes.txt` (24 classes: the 8 grocery categories, furniture, floor; set by `classes_file` in `classes.yaml`) | `detector_backends.py` | frame -> boxes, masks | `detector: yoloe` |
+| Instance masks (alt) | **SAM 3** (`SAM3SemanticPredictor`), text-prompted with `classes_file` (`yoloe_classes.txt`); boxes and masks together; slow (image backbone and text prompts re-run each frame) | `detector_backends.Sam3TextDetector` | frame -> boxes, conf, class ids, masks | `detector: sam3`, `sam3_weights` (gated HF `facebook/sam3`; not in the repo) |
 | Instance masks (alt) | **YOLO26s-seg**, native instance seg, closed vocab (COCO) | `detector_backends.py` | frame -> boxes, conf, class ids, masks | `detector: yolo26_seg` |
 | Instance masks (alt) | **YOLO11l** boxes + **MobileSAM** masks (box-prompted, two-stage) | `detector_backends.py` | frame -> boxes -> SAM masks | `detector: yolo11_sam` |
-| Mask refinement (optional) | **MobileSAM** (box prompt) or **FastSAM** (box-matched mask); replaces the detector's masks | `detector_backends.masks_for_boxes` | boxes -> masks (a box FastSAM skips falls back to the detector's mask) | `masker: none \| mobile_sam \| fastsam` |
+| Mask refinement (optional) | **MobileSAM** (box prompt), **FastSAM** (box-matched mask) or **SAM-HQ** (box prompt, HQ output token, finer on thin structure); replaces the detector's masks | `detector_backends.masks_for_boxes`, `HQSamMasker` | boxes -> masks (a box FastSAM skips falls back to the detector's mask) | `masker: none \| mobile_sam \| fastsam \| sam_hq`, `sam_hq_model`, `sam_hq_weights`, `masker_blobs: none \| split_merge \| largest` (a detection whose own mask is in several blobs is prompted per blob and unioned, or by its biggest blob only) |
 | Per-object semantic feature | **OpenCLIP ViT-H-14** (`laion2b_s32b_b79k`), image encoder, L2-normalized | `model_utils.compute_clip_features_batched` | crops (batched) -> `clip_ft` (1024-d) | `clip_mask_crop`, `clip_crop_padding` |
 | Per-object instance feature | **DINOv2 ViT-B/14** (`vit_base_patch14_dinov2.lvd142m`, timm), CLS token, L2-normalized | `model_utils.compute_dino_features` | the same crops, squashed to 224x224 -> `dino_ft` (768-d) | `use_dino`, `dino_model`, `dino_img_size`, `dino_weight` |
 | Query embedding | Same **ViT-H-14** text encoder (CLIP only; DINO has no text tower) | `grounding.GroundingService.encode_text` | text -> unit vector | shares `clip_model` and `clip_lock` with the mapper |
