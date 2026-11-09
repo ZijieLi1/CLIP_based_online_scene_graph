@@ -50,39 +50,6 @@ def empty_detections(image_hw: tuple[int, int]):
     )
 
 
-def _torch_compat_for_sam3():
-    """Ultralytics' SAM 3 imports torch.nn.attention / torch.compiler (torch >= 2.5). On older torch
-    (the container has 2.0.1) stub the two names it uses: a no-op sdpa_kernel (torch then picks the
-    attention backend itself) and is_dynamo_compiling() -> False. Upgrading torch makes this a no-op."""
-    import contextlib
-    import enum
-    import sys
-    import types
-
-    if not hasattr(torch.nn, "attention"):
-        mod = types.ModuleType("torch.nn.attention")
-
-        class SDPBackend(enum.Enum):
-            ERROR = -1
-            MATH = 0
-            FLASH_ATTENTION = 1
-            EFFICIENT_ATTENTION = 2
-            CUDNN_ATTENTION = 3
-
-        @contextlib.contextmanager
-        def sdpa_kernel(backends, set_priority=False):
-            yield
-
-        mod.SDPBackend, mod.sdpa_kernel = SDPBackend, sdpa_kernel
-        sys.modules["torch.nn.attention"] = mod
-        torch.nn.attention = mod
-    if not hasattr(torch, "compiler"):
-        comp = types.ModuleType("torch.compiler")
-        comp.is_dynamo_compiling = lambda: False
-        sys.modules["torch.compiler"] = comp
-        torch.compiler = comp
-
-
 class HQSamMasker:
     """Box-prompted SAM-HQ (PyPI `segment-anything-hq`; Ultralytics has no SAM-HQ).
 
@@ -139,7 +106,9 @@ class Sam3TextDetector:
     """
 
     def __init__(self, weights: str, names: list[str], half: bool = True):
-        _torch_compat_for_sam3()
+        major_minor = tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2])
+        if major_minor < (2, 5):  # Ultralytics' SAM 3 imports torch.nn.attention when the model is built
+            raise RuntimeError(f"detector=sam3 needs torch >= 2.5; this environment has torch {torch.__version__}.")
         from ultralytics.models.sam import SAM3SemanticPredictor
 
         if not Path(weights).exists():

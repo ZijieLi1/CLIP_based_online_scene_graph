@@ -21,7 +21,7 @@ The mapper was compute-bound in every run: it never waited for a frame (the came
 | `detector=yoloe masker=none` | 796 | 111 | **9.0** |
 | `detector=yoloe masker=sam_hq masker_blobs=split_merge` with `sam_hq_model: vit_b` (previous default, fp32) | 373 | 237 | **4.2** |
 | same with `sam_hq_model: vit_tiny` | 634 | 140 | **7.2** |
-| `sam_hq_model: vit_b` with `sam_hq_half: true` (**current default**) | not yet measured live | | |
+| `sam_hq_model: vit_b` with `sam_hq_half: true` (**current default**; torch 2.9.1, run after the image was rebuilt) | 446 | 198 | **5.0** |
 | `detector=sam3 masker=none` | 76 | 792 | **1.26** |
 
 The `vit_tiny` row (same setup, 634 frames, run later): **140 ms per frame, 7.2 fps**. The SAM-HQ masker drops from about 124 ms to about 34 ms, CLIP stays near 49 ms, mean GPU utilisation 62%, whole-GPU memory about 6.7 GB (8.9 GB with `vit_b`), process CPU 346% mean. On 16 Replica frames (45 objects) `vit_tiny` masks overlapped `vit_b` masks with a mean IoU of 0.957 (8 objects below 0.9); on the couch and table cases it was ~15 to 20% smaller and in one inspected case left out the couch's back cushion, while `vit_b` showed leakage speckles. No ground truth, so neither is shown to be better.
@@ -74,6 +74,6 @@ Percentages for the `vit_b` setup: SAM-HQ 53%, CLIP 23%, back-projection 7%, DIN
 
 ## Ideas to speed it up (none tested)
 
-- **SAM-HQ:** `vit_b` already runs in fp16 (the default). In an offline Replica check on 45 objects fp16 matched fp32 masks with a mean IoU of 0.996 and was about 1.5x faster, with 1.8 GB instead of 3.1 GB peak memory, but that was timed while another mapper shared the GPU, so the live number is still to be measured. Other options: `vit_tiny`, or running the masker only for new or uncertain detections.
+- **SAM-HQ:** `vit_b` already runs in fp16 (the default). In an offline Replica check on 45 objects fp16 matched fp32 masks with a mean IoU of 0.996. Live, the SAM-HQ step dropped from about 124 ms (fp32) to about 73 ms (fp16), and the frame from 237 to 198 ms, but that run used the rebuilt image (torch 2.9.1, ultralytics 8.4.208) and different scene content, so it is not a controlled comparison. Other options: `vit_tiny`, or running the masker only for new or uncertain detections.
 - **CLIP (the main lever for any setup):** run it in half precision (it is fp32 now), skip it for large background objects such as wall and floor, cap the number of crops per frame, or re-encode an object only every few frames.
 - **SAM 3:** most of the extra cost is object count. Raise `detection_conf` or remove classes like wall and floor from `yoloe_classes.txt`.
