@@ -1,8 +1,8 @@
 # Dataflow and model usage
 
-End-to-end view of the online mapper (`online_scene_graph/slam/online_mapping.py`). Three neural models run on the hot path: one instance segmenter (`detector:`, default `yoloe_pf`, optionally re-masked by `masker:`), OpenCLIP ViT-H-14 and, when `use_dino: true`, a DINOv2 ViT-B/14. Everything after that is geometry (depth back-projection, DBSCAN, voxel downsample, IoU/overlap).
+End-to-end view of the online mapper (`online_scene_graph/slam/online_mapping.py`). The default hot path runs four neural models per frame: YOLOE (`detector: yoloe`, text prompts from `yoloe_classes.txt`) to find objects, SAM-HQ `vit_b` in fp16 (`masker: sam_hq`) to refine each object's mask from its box, OpenCLIP ViT-H-14 for the semantic feature and DINOv2 ViT-B/14 (`use_dino: true`) for the instance feature. Everything after that is geometry (mask erosion, depth back-projection, voxel downsample, DBSCAN, axis-aligned boxes, overlap-based association).
 
-> Note: **SAM 3 is an optional backend (`detector: sam3`), not the default.** The default segmenter is YOLOE prompt-free (`yoloe_pf`), whose own instance masks are used directly. MobileSAM (`mobile_sam.pt`) is used only in the two-stage `yolo11_sam` backend or when `masker: mobile_sam` is set; `masker: fastsam` uses FastSAM instead. On 8 Replica frames YOLOE-pf boxes + MobileSAM masks looked cleaner at edges than YOLOE's own masks but cost ~45 ms more per frame and did not score better on a depth-leak proxy, so SAM is not on the default path.
+> Note: the detector and masker are independent choices. `detector:` picks who finds the objects (`yoloe` default, `yoloe_pf`, `yolo26_seg`, `yolo11_sam`, or the slow `sam3`), and `masker:` optionally replaces that detector's masks with box-prompted ones (`sam_hq` default, `mobile_sam`, `fastsam`, or `none` to keep the detector's own). Measured speed for the main combinations (about 9 fps for YOLOE alone, 7.2 fps with SAM-HQ `vit_tiny`, 4.2 fps with SAM-HQ `vit_b` in fp32, 1.3 fps for SAM 3 alone; the fp16 `vit_b` default has not been timed live yet) is in [`performance.md`](performance.md).
 
 ## 1. System dataflow
 
@@ -25,7 +25,10 @@ flowchart TD
     SLOT -->|"Frame: rgb, depth, K, pose"| DET
 
     subgraph PERFRAME["Per-frame loop (mapping thread) — online_mapping.py"]
-        DET["<b>2D detection + instance masks</b><br/>utils/detector_backends.py<br/>MODEL: YOLOE-PF (default) | YOLOE | YOLO26-seg | YOLO11 + MobileSAM | SAM 3 (text prompts)<br/>optional masker: MobileSAM | FastSAM | SAM-HQ replaces the detector's masks"]
+        subgraph DETG["2D detection + instance masks — utils/detector_backends.py"]
+            direction LR
+            DET["<b>Detector</b> (detector:)<br/>MODEL: YOLOE text prompts (default) | YOLOE-PF | YOLO26-seg | YOLO11 + MobileSAM | SAM 3"] --> MASKER["<b>Masker</b> (masker:)<br/>MODEL: SAM-HQ ViT-B fp16 (default) | MobileSAM | FastSAM | none<br/>box prompts; masker_blobs: one prompt per mask blob"]
+        end
         CLIPIMG["<b>Per-detection embeddings</b><br/>utils/model_utils.py<br/>CLIP: OpenCLIP ViT-H-14 (laion2b) image tower -> clip_ft<br/>DINO: DINOv2 ViT-B/14 CLS (use_dino) -> dino_ft<br/>same crop for both (padded bbox, or masked if clip_mask_crop)"]
         FILT["Filter detections<br/>(mask area, conf, bbox ratio, bg classes)<br/>mask_subtract_contained"]
         subgraph BP["Back-project masked depth to 3D — slam/utils.py"]
@@ -39,12 +42,12 @@ flowchart TD
         MATCH["Data association — slam/mapping.py<br/>spatial sim (overlap/IoU) + visual sim<br/>(1-w)*cos(clip_ft) + w*cos(dino_ft) -> sim_sum > 1.2"]
         MERGE["Merge matched / append new<br/>merge_obj2_into_obj1:<br/>fuse pcd, running-mean clip_ft + dino_ft,<br/>majority-vote class_name"]
         POST["Periodic post-process<br/>denoise (DBSCAN) / filter / merge overlaps<br/>(uses spatial + clip_ft + text-sim thresholds)"]
-        DET --> CLIPIMG --> FILT --> ERODE
+        MASKER --> CLIPIMG --> FILT --> ERODE
         BBOX --> DL
         DL --> MATCH --> MERGE --> POST
     end
 
-    MAP[("MapObjectList<br/>per object: uuid, class_name, clip_ft, dino_ft,<br/>pcd, bbox, num_detections")]
+    MAP[("MapObjectList<br/>per object: uuid, class_name, clip_ft, dino_ft,<br/>pcd, bbox (axis-aligned), num_detections")]
     POST --> MAP
     MATCH <-.->|"reads clip_ft + pcd"| MAP
 
@@ -73,15 +76,17 @@ flowchart TD
 
 | Stage | Model / algorithm | Code | Input -> output | Config |
 | --- | --- | --- | --- | --- |
-| Instance masks (default) | **YOLOE-26m-seg-pf**, prompt-free, built-in vocabulary of 4,585 tags (checked on `yoloe-26m-seg-pf.pt`; includes non-object tags such as "action film"); native masks. The bg-class label filter rarely matches these names | `detector_backends.py` | BGR frame -> boxes, conf, class ids, masks | `detector: yoloe_pf`, `yoloe_pf_weights`, `detection_conf` |
-| Instance masks (alt) | **YOLOE-26l-seg**, open vocab, text prompts from `yoloe_classes.txt` (24 classes: the 8 grocery categories, furniture, floor; set by `classes_file` in `classes.yaml`) | `detector_backends.py` | frame -> boxes, masks | `detector: yoloe` |
-| Instance masks (alt) | **SAM 3** (`SAM3SemanticPredictor`), text-prompted with `classes_file` (`yoloe_classes.txt`); boxes and masks together; slow (image backbone and text prompts re-run each frame) | `detector_backends.Sam3TextDetector` | frame -> boxes, conf, class ids, masks | `detector: sam3`, `sam3_weights` (gated HF `facebook/sam3`; not in the repo) |
-| Instance masks (alt) | **YOLO26s-seg**, native instance seg, closed vocab (COCO) | `detector_backends.py` | frame -> boxes, conf, class ids, masks | `detector: yolo26_seg` |
-| Instance masks (alt) | **YOLO11l** boxes + **MobileSAM** masks (box-prompted, two-stage) | `detector_backends.py` | frame -> boxes -> SAM masks | `detector: yolo11_sam` |
-| Mask refinement (optional) | **MobileSAM** (box prompt), **FastSAM** (box-matched mask) or **SAM-HQ** (box prompt, HQ output token, finer on thin structure); replaces the detector's masks | `detector_backends.masks_for_boxes`, `HQSamMasker` | boxes -> masks (a box FastSAM skips falls back to the detector's mask) | `masker: none \| mobile_sam \| fastsam \| sam_hq`, `sam_hq_model`, `sam_hq_weights`, `masker_blobs: none \| split_merge \| largest` (a detection whose own mask is in several blobs is prompted per blob and unioned, or by its biggest blob only) |
+| Detector (default) | **YOLOE-26l-seg**, open vocab, text prompts from `yoloe_classes.txt` (26 entries: the 8 grocery categories, furniture, floor, ...; set by `classes_file` in `classes.yaml`); also produces its own masks | `detector_backends.py` | BGR frame -> boxes, conf, class ids, masks | `detector: yoloe`, `yoloe_weights`, `detection_conf` |
+| Detector (alt) | **YOLOE-26m-seg-pf**, prompt-free, built-in vocabulary of 4,585 tags (includes non-object tags such as "action film"); native masks. The bg-class label filter rarely matches these names | `detector_backends.py` | frame -> boxes, conf, class ids, masks | `detector: yoloe_pf`, `yoloe_pf_weights` |
+| Detector (alt) | **SAM 3** (`SAM3SemanticPredictor`), text-prompted with `classes_file` (`yoloe_classes.txt`); boxes and masks together; slow (image backbone and text prompts re-run each frame) | `detector_backends.Sam3TextDetector` | frame -> boxes, conf, class ids, masks | `detector: sam3`, `sam3_weights` (gated HF `facebook/sam3`; not in the repo) |
+| Detector (alt) | **YOLO26s-seg**, native instance seg, closed vocab (COCO) | `detector_backends.py` | frame -> boxes, conf, class ids, masks | `detector: yolo26_seg` |
+| Detector (alt) | **YOLO11l** boxes + **MobileSAM** masks (box-prompted, two-stage) | `detector_backends.py` | frame -> boxes -> SAM masks | `detector: yolo11_sam` |
+| Mask refinement (default on) | **SAM-HQ** (`segment-anything-hq`, default `vit_b` run in fp16 via autocast, weights from Hugging Face `lkeab/hq-sam`): one box prompt -> one mask with the HQ output token, finer edges than the detector's own masks. Alternatives: **MobileSAM** (box prompt), **FastSAM** (box-matched mask; a box it cannot match keeps the detector's mask). Replaces the detector's masks | `detector_backends.HQSamMasker`, `masks_for_boxes` | boxes -> masks | `masker: none \| mobile_sam \| fastsam \| sam_hq`, `sam_hq_model: vit_tiny \| vit_b \| vit_l \| vit_h`, `sam_hq_half`, `sam_hq_weights` |
+| Mask blob handling | A detection whose own mask is in several connected blobs (an occluder cuts it, so its box also covers the occluder) is prompted per blob and the masks unioned (`split_merge`), or prompted only with its biggest blob (`largest`) | `detector_backends.split_blobs` | detector masks -> one prompt per blob | `masker_blobs: none \| split_merge \| largest` (needs a masker) |
 | Per-object semantic feature | **OpenCLIP ViT-H-14** (`laion2b_s32b_b79k`), image encoder, L2-normalized | `model_utils.compute_clip_features_batched` | crops (batched) -> `clip_ft` (1024-d) | `clip_mask_crop`, `clip_crop_padding` |
 | Per-object instance feature | **DINOv2 ViT-B/14** (`vit_base_patch14_dinov2.lvd142m`, timm), CLS token, L2-normalized | `model_utils.compute_dino_features` | the same crops, squashed to 224x224 -> `dino_ft` (768-d) | `use_dino`, `dino_model`, `dino_img_size`, `dino_weight` |
 | Query embedding | Same **ViT-H-14** text encoder (CLIP only; DINO has no text tower) | `grounding.GroundingService.encode_text` | text -> unit vector | shares `clip_model` and `clip_lock` with the mapper |
+| Back-projection and cleanup | Erode each mask by `mask_erode_px` (5 px), unproject masked depth with K + pose (one cloud per mask blob), voxel-downsample 2.5 cm, DBSCAN keeping the largest cluster of each blob (eps 0.1 m, min 10 points), axis-aligned bounding box in world axes | `slam/utils.py` (`erode_masks`, `detections_to_obj_pcd_and_bbox`, `init_process_pcd_blobs`, `get_bounding_box`) | masks + depth + pose -> pcd + box | `mask_erode_px`, `dbscan_per_blob`, `dbscan_remove_noise`, `dbscan_eps`, `dbscan_min_points`, `downsample_voxel_size` |
 | Data association | `(1-w)*cos(clip_ft) + w*cos(dino_ft)` + 3D overlap/IoU | `slam/mapping.py` | M detections x N objects -> match indices | `sim_threshold`, `dino_weight`, `spatial_sim_type`, `match_method` |
 | Object fusion | Running-mean `clip_ft` and `dino_ft` (weights = `num_detections`, renormalised), point-cloud union. The merged object keeps the `id` (and `inst_color`) of the side created first (smaller `curr_obj_num`), whichever side is the target, so an object keeps one id for the run | `slam/utils.merge_obj2_into_obj1` | matched pair -> one object | `downsample_voxel_size`, `dbscan_*` |
 
@@ -107,12 +112,12 @@ flowchart LR
         SRV["Find / Snapshot service callbacks"]
     end
     subgraph MAPT["Mapping thread (main)"]
-        LOOP["next() -> YOLO -> CLIP image -> 3D -> match/merge"]
+        LOOP["next() -> detector + masker -> CLIP + DINO -> 3D -> match/merge"]
     end
     SUBS -->|"overwrite latest"| SLOT[(LatestFrameSlot)]
     SLOT -->|"pull via next()"| LOOP
     LOOP -->|"holds map_lock while mutating MapObjectList"| MAP[(MapObjectList)]
-    LOOP -->|"holds clip_lock for image encode"| GPU["GPU: ViT-H-14"]
+    LOOP -->|"holds clip_lock for CLIP/DINO image encode"| GPU["GPU: CLIP ViT-H-14<br/>(also DINOv2, SAM-HQ, detector in the mapping thread)"]
     SRV -->|"clip_lock for text encode"| GPU
     SRV -->|"map_lock only to copy clip_ft + metadata"| MAP
 ```
@@ -121,4 +126,13 @@ Query threads copy features out under `map_lock` and score the copy, so a concur
 
 ## 4. Typical cost split
 
-CLIP image encoding scales with detections per frame (one ViT-H crop each, ~20 ms each in fp32 on an RTX 3090), so a detector that returns more boxes makes the loop slower. DINOv2 ViT-B/14 at 224 px adds one more (cheaper) forward per crop when `use_dino` is on. YOLOE-pf alone returned 3-21 detections per Replica frame at `conf` 0.25 (detector ~30 ms). See [`online-graph-pddl-architecture.md`](online-graph-pddl-architecture.md) for the bottleneck analysis and [`ros-ingest.md`](ros-ingest.md) for the topic and QoS contract.
+Measured on the live robot topics (RTX 3090, fp32), see [`performance.md`](performance.md) for the full per-step tables and caveats:
+
+| Config | ms per frame | fps | Largest steps |
+| --- | --- | --- | --- |
+| YOLOE alone (`masker: none`) | 111 | 9.0 | CLIP 54 ms, back-projection 16, detector 16, DINOv2 12 |
+| YOLOE + SAM-HQ `vit_tiny` | 140 | 7.2 | detector + masker 51 (SAM-HQ ~34), CLIP 49, back-projection 16, DINOv2 11 |
+| YOLOE + SAM-HQ `vit_b` fp32 | 237 | 4.2 | SAM-HQ 124, CLIP 55, back-projection 17, DINOv2 12 |
+| SAM 3 alone | 792 | 1.26 | detector 318, CLIP 307 (about 19 objects per frame), back-projection 78, DINOv2 52 |
+
+CLIP image encoding scales with the number of detections per frame (one ViT-H crop each, about 16 to 20 ms in fp32), and so do DINOv2, back-projection and DBSCAN, so a detector that returns more objects makes the loop slower. The mapping logic itself (association, merging, filtering, periodic cleanup) is about 8 ms per frame. See [`online-graph-pddl-architecture.md`](online-graph-pddl-architecture.md) for the bottleneck analysis and [`ros-ingest.md`](ros-ingest.md) for the topic and QoS contract.

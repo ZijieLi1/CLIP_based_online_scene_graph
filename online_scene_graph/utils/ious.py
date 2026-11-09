@@ -149,6 +149,28 @@ def compute_giou_batch(bbox1: torch.Tensor, bbox2: torch.Tensor) -> torch.Tensor
 
     return giou
 
+def compute_aabb_iou_batch(bbox1, bbox2, eps=0.02):
+    """IoU between two sets of axis-aligned 3D boxes given as corner points.
+
+    bbox1: (M, 8, 3), bbox2: (N, 8, 3) -> (M, N). Each side is first made at least `eps` long (as
+    expand_3d_box does) by growing it about the box centre, so flat or line-like boxes (a floor or wall
+    aligned with the world axes, a thin sliver) get a small positive volume. The oriented-box
+    pytorch3d path divides by the edge length and fails with "Plane vertices are not coplanar" on those.
+    """
+    def lo_hi(b):
+        mn, mx = b.float().min(dim=1).values, b.float().max(dim=1).values
+        centre = (mn + mx) / 2
+        half = torch.clamp(mx - mn, min=eps) / 2
+        return centre - half, centre + half
+
+    lo1, hi1 = lo_hi(bbox1)
+    lo2, hi2 = lo_hi(bbox2)
+    inter = torch.clamp(torch.minimum(hi1[:, None], hi2[None]) - torch.maximum(lo1[:, None], lo2[None]), min=0).prod(-1)
+    vol1 = (hi1 - lo1).prod(-1)
+    vol2 = (hi2 - lo2).prod(-1)
+    return inter / (vol1[:, None] + vol2[None] - inter)
+
+
 def compute_3d_iou_accurate_batch(bbox1, bbox2):
     '''
     Compute IoU between two sets of oriented (or axis-aligned) 3D bounding boxes.
@@ -158,6 +180,7 @@ def compute_3d_iou_accurate_batch(bbox1, bbox2):
     
     returns: (M, N)
     '''
+    orig1, orig2 = bbox1, bbox2
     # Must expend the box beforehand, otherwise it may results overestimated results
     bbox1 = expand_3d_box(bbox1, 0.02)
     bbox2 = expand_3d_box(bbox2, 0.02)
@@ -167,7 +190,10 @@ def compute_3d_iou_accurate_batch(bbox1, bbox2):
     bbox1 = bbox1[:, [0, 2, 5, 3, 1, 7, 4, 6]]
     bbox2 = bbox2[:, [0, 2, 5, 3, 1, 7, 4, 6]]
     
-    inter_vol, iou = ops.box3d_overlap(bbox1.float(), bbox2.float())
+    try:
+        inter_vol, iou = ops.box3d_overlap(bbox1.float(), bbox2.float())
+    except ValueError:  # "Plane vertices are not coplanar": degenerate box, use the axis-aligned IoU
+        return compute_aabb_iou_batch(orig1, orig2)
     
     return iou
 

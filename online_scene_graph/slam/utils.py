@@ -21,7 +21,7 @@ import uuid
 
 from online_scene_graph.slam.slam_classes import MapEdgeMapping, MapObjectList, DetectionList, to_tensor
 
-from online_scene_graph.utils.ious import compute_3d_iou, compute_3d_iou_accurate_batch, compute_iou_batch
+from online_scene_graph.utils.ious import compute_3d_iou, compute_3d_iou_accurate_batch, compute_aabb_iou_batch, compute_iou_batch
 
 tracker = MappingTracker()
 
@@ -471,7 +471,7 @@ def compute_overlap_matrix_2set(objects_map: MapObjectList, objects_new: Detecti
     bbox_map = objects_map.get_stacked_values_torch('bbox')
     bbox_new = objects_new.get_stacked_values_torch('bbox')
     try:
-        iou = compute_3d_iou_accurate_batch(bbox_map, bbox_new) # (m, n)
+        iou = compute_aabb_iou_batch(bbox_map, bbox_new) # (m, n); every box is axis-aligned now
     except ValueError:
         print("Met `Plane vertices are not coplanar` error, use axis aligned bounding box instead")
         bbox_map = []
@@ -590,7 +590,7 @@ def compute_overlap_matrix_general(objects_a: MapObjectList, objects_b = None, d
     #             raise  # Re-raise other unexpected exceptions
     # ious = compute_3d_iou_accurate_batch_safe(bbox_a, bbox_b)        
     
-    ious = compute_3d_iou_accurate_batch(bbox_a, bbox_b) # (m, n)
+    ious = compute_aabb_iou_batch(bbox_a, bbox_b) # (m, n); every box is axis-aligned now
 
 
     # Compute the pairwise overlaps

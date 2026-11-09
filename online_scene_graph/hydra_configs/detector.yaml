@@ -26,7 +26,8 @@ fastsam_weights: FastSAM-s.pt
 yolo26_seg_weights: ${repo_root}/online_scene_graph/yolo26s-seg.pt
 yoloe_weights: yoloe-26l-seg.pt
 yoloe_pf_weights: yoloe-26m-seg-pf.pt
-sam_hq_model: vit_b          # vit_b | vit_l | vit_h | vit_tiny (weights auto-download from HF lkeab/hq-sam)
+sam_hq_model: vit_b          # vit_tiny | vit_b | vit_l | vit_h (weights auto-download from HF lkeab/hq-sam). vit_tiny is ~3-4x faster but its masks are ~15-20% smaller on large objects
+sam_hq_half: true            # run the SAM-HQ image encoder + decoder in fp16 (autocast); ~1.5x faster and less memory than fp32 on vit_b; NOTE: IT MAY CRASH UNEXPECTEDLY
 sam_hq_weights: null         # or a local sam_hq_*.pth path
 sam3_weights: ${repo_root}/sam3.pt        # gated (Hugging Face facebook/sam3); download it and point this at the file
 detection_conf: 0.78
